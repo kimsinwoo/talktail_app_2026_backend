@@ -59,26 +59,30 @@ const startOAuth = async (req, res, next) => {
 const handleOAuthCallback = async (req, res, next) => {
   try {
     const { provider } = req.params;
-    const { code, state, code_verifier, redirect_uri } = req.body;
+    const body = req.body || {};
+    const code = body.code;
+    const state = body.state;
+    const code_verifier = body.code_verifier || body.codeVerifier;
+    const redirect_uri = body.redirect_uri || body.redirectUri;
 
     // 필수 파라미터 검증
     if (!code || !state || !code_verifier) {
-      throw new AppError('Missing required parameters: code, state, code_verifier', 400);
+      throw new AppError('요청 형식이 잘못되었습니다. code, state, code_verifier가 필요합니다. 다시 로그인해 주세요.', 400);
     }
 
     // Provider 유효성 검증
     if (!oauthFactory.isSupported(provider)) {
-      throw new AppError(`Unsupported OAuth provider: ${provider}`, 400);
+      throw new AppError(`지원하지 않는 로그인 방식입니다: ${provider}`, 400);
     }
 
     // State 검증
     const stateData = stateStore.get(state);
     if (!stateData) {
-      throw new AppError('Invalid or expired state', 400);
+      throw new AppError('로그인 세션이 만료되었거나 잘못된 요청입니다. 다시 시도해 주세요.', 400);
     }
 
     if (stateData.provider !== provider) {
-      throw new AppError('State provider mismatch', 400);
+      throw new AppError('로그인 요청 정보가 일치하지 않습니다. 다시 시도해 주세요.', 400);
     }
 
     // State 일회용 (삭제)
@@ -86,7 +90,7 @@ const handleOAuthCallback = async (req, res, next) => {
 
     // PKCE 검증
     if (!PKCE.verify(code_verifier, stateData.codeChallenge)) {
-      throw new AppError('Invalid code_verifier', 400);
+      throw new AppError('보안 검증에 실패했습니다. 다시 로그인해 주세요.', 400);
     }
 
     // OAuth 서비스 가져오기

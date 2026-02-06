@@ -3,7 +3,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../models');
 const { verifyToken } = require('../middlewares/auth');
-const { authLimiter, signupLimiter } = require('../middlewares/rateLimiter');
+const { authLimiter, signupLimiter, passwordResetLimiter } = require('../middlewares/rateLimiter');
+const emailService = require('../services/emailService');
+const passwordResetStore = require('../utils/passwordResetStore');
 const {
   validateEmail,
   validatePassword,
@@ -319,7 +321,7 @@ router.post(
       // 현재 비밀번호 확인
       const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
       if (!isPasswordValid) {
-        throw new AppError('현재 비밀번호가 올바르지 않습니다.', 400);
+        throw new AppError('현재 비밀번호가 올바르지 않습니다. 다시 입력해주세요.', 400);
       }
 
       // 새 비밀번호 해싱
@@ -369,7 +371,158 @@ router.put(
       logger.info('Password updated via /auth/update', { email: req.user.email });
       res.json({
         success: true,
-        message: '비밀번호가 변경되었습니다.',
+        message: '비밀번호가 수정되었습니다.',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * 아이디(이메일) 찾기
+ * POST /api/auth/find-id
+ * Body: { name, phone }
+ * 응답: { success, maskedEmail } 또는 일치 계정 없음
+ */
+function normalizePhone(phone) {
+  return String(phone || '').replace(/\D/g, '');
+}
+
+function maskEmail(email) {
+  if (!email || !email.includes('@')) return email;
+  const [local, domain] = email.split('@');
+  if (local.length <= 2) return `${local[0]}***@${domain}`;
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+router.post(
+  '/find-id',
+  authLimiter,
+  [
+    body('name').trim().notEmpty().withMessage('이름을 입력해 주세요.'),
+    body('phone').trim().notEmpty().withMessage('전화번호를 입력해 주세요.'),
+  ],
+  handleValidationErrors,
+  async (req, res, next) => {
+    try {
+      const { name, phone } = req.body;
+      const normalizedPhone = normalizePhone(phone);
+      if (normalizedPhone.length < 10) {
+        throw new AppError('올바른 전화번호를 입력해 주세요.', 400);
+      }
+      const users = await db.User.findAll({
+        where: { name: name.trim() },
+        attributes: ['email', 'phone'],
+      });
+      const user = users.find(
+        (u) => u.phone && normalizePhone(u.phone) === normalizedPhone
+      );
+      if (!user) {
+        return res.status(200).json({
+          success: false,
+          message: '일치하는 계정이 없습니다.',
+        });
+      }
+      res.json({
+        success: true,
+        maskedEmail: maskEmail(user.email),
+        message: '가입된 이메일을 찾았습니다.',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * 비밀번호 재설정 요청 (인증 코드 발송)
+ * POST /api/auth/forgot-password
+ * Body: { email }
+ */
+router.post(
+  '/forgot-password',
+  passwordResetLimiter,
+  [body('email').trim().isEmail().withMessage('올바른 이메일을 입력해 주세요.')],
+  handleValidationErrors,
+  async (req, res, next) => {
+    try {
+      const email = req.body.email.trim().toLowerCase();
+      const user = await db.User.findByPk(email);
+      if (!user || !user.password) {
+        return res.status(200).json({
+          success: false,
+          message: '해당 이메일로 가입된 계정이 없거나 비밀번호 로그인을 사용하지 않습니다.',
+        });
+      }
+      if (!emailService.isEmailConfigured()) {
+        return res.status(200).json({
+          success: false,
+          message: '이메일 발송이 설정되지 않았습니다. 고객센터(talktail@creamoff.co.kr)로 문의해 주세요.',
+        });
+      }
+      const code = passwordResetStore.generateCode();
+      passwordResetStore.set(email, code);
+      const sent = await emailService.sendPasswordResetEmail(email, code);
+      if (!sent) {
+        return res.status(200).json({
+          success: false,
+          message: '이메일 발송에 실패했습니다. 잠시 후 다시 시도하거나 고객센터로 문의해 주세요.',
+        });
+      }
+      res.json({
+        success: true,
+        message: '해당 이메일로 인증 코드를 발송했습니다. 10분 내에 입력해 주세요.',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * 비밀번호 재설정 (인증 코드 확인 후 새 비밀번호 설정)
+ * POST /api/auth/reset-password
+ * Body: { email, code, newPassword }
+ */
+router.post(
+  '/reset-password',
+  passwordResetLimiter,
+  [
+    body('email').trim().isEmail().withMessage('올바른 이메일을 입력해 주세요.'),
+    body('code').trim().notEmpty().withMessage('인증 코드를 입력해 주세요.'),
+    body('newPassword')
+      .trim()
+      .notEmpty()
+      .withMessage('새 비밀번호는 필수입니다.')
+      .isLength({ min: 8 })
+      .withMessage('비밀번호는 8자 이상이어야 합니다.'),
+  ],
+  handleValidationErrors,
+  async (req, res, next) => {
+    try {
+      const { email, code, newPassword } = req.body;
+      const normalizedEmail = email.trim().toLowerCase();
+      const storedEmail = passwordResetStore.consume(code);
+      if (!storedEmail || storedEmail !== normalizedEmail) {
+        return res.status(400).json({
+          success: false,
+          message: '인증 코드가 올바르지 않거나 만료되었습니다. 다시 요청해 주세요.',
+        });
+      }
+      const user = await db.User.findByPk(normalizedEmail);
+      if (!user) {
+        return res.status(400).json({
+          success: false,
+          message: '사용자를 찾을 수 없습니다.',
+        });
+      }
+      const hashedPassword = await bcrypt.hash(newPassword, config.security.bcryptRounds);
+      await user.update({ password: hashedPassword });
+      logger.info('Password reset completed', { email: normalizedEmail });
+      res.json({
+        success: true,
+        message: '비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요.',
       });
     } catch (error) {
       next(error);

@@ -39,6 +39,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         comment: '배터리 잔량 (%)',
       },
+      lastDisconnectedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: '마지막 디바이스 연결 해제 시각 (5분 쿨다운용)',
+      },
     },
     {
       charset: 'utf8mb4',

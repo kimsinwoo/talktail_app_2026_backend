@@ -59,10 +59,23 @@ router.get('/calendar-dates', async (req, res, next) => {
         pet_code: petCode,
         date: { [db.Sequelize.Op.between]: [startStr, endStr] },
       },
-      attributes: ['date'],
+      attributes: ['date', 'special_note', 'poop_note'],
       raw: true,
     });
-    res.json({ success: true, data: rows.map((r) => r.date) });
+    const checkDates = rows.map((r) => r.date);
+    const specialNotes = rows
+      .filter((r) => {
+        const hasSpecial = r.special_note && String(r.special_note).trim();
+        const hasPoop = r.poop_note && String(r.poop_note).trim();
+        return hasSpecial || hasPoop;
+      })
+      .map((r) => {
+        const parts = [];
+        if (r.special_note && String(r.special_note).trim()) parts.push(String(r.special_note).trim());
+        if (r.poop_note && String(r.poop_note).trim()) parts.push(`배변: ${String(r.poop_note).trim()}`);
+        return { date: r.date, specialNote: parts.join(' / ') };
+      });
+    res.json({ success: true, data: { checkDates, specialNotes } });
   } catch (e) {
     next(e);
   }
@@ -90,6 +103,7 @@ router.get('/trend', async (req, res, next) => {
     const list = records.map((r) => ({
       date: r.date,
       meal: r.meal || 'good',
+      water: r.water || 'normal',
       poop: r.poop || 'normal',
       activity: r.activity || 'similar',
       condition: r.special === 'none' ? 'good' : r.special === 'some' ? 'normal' : r.special === 'yes' ? 'bad' : 'normal',

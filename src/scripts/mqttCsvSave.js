@@ -171,8 +171,9 @@ function parsePayload(payload) {
 
 /**
  * payload가 "disconnected:mac_address" 또는 "desconnected:mac_address" 형식인지 확인
+ * mac 주소는 소문자로 normalize하여 반환 (유효하지 않으면 null)
  * @param {Buffer|string} payload
- * @returns {string|null} mac_address 또는 null
+ * @returns {string|null} mac_address (소문자) 또는 null
  */
 function parseDisconnectedPayload(payload) {
   let raw;
@@ -183,15 +184,14 @@ function parseDisconnectedPayload(payload) {
   } else {
     return null;
   }
+  let mac = null;
   if (raw.startsWith('disconnected:')) {
-    const mac = raw.slice('disconnected:'.length).trim();
-    return mac.length > 0 ? mac : null;
+    mac = raw.slice('disconnected:'.length).trim();
+  } else if (raw.startsWith('desconnected:')) {
+    mac = raw.slice('desconnected:'.length).trim();
   }
-  if (raw.startsWith('desconnected:')) {
-    const mac = raw.slice('desconnected:'.length).trim();
-    return mac.length > 0 ? mac : null;
-  }
-  return null;
+  if (!mac || mac.length === 0) return null;
+  return mac.toLowerCase();
 }
 
 /**
@@ -237,7 +237,7 @@ async function processMessage(hubId, payload) {
 /**
  * MQTT 클라이언트 연결 및 hub/+/send 구독
  * @param {object} [options]
- * @param {function(string, string)} [options.onDisconnected] - (hubId, deviceMac) 호출. disconnected:mac 수신 시
+ * @param {function(string)} [options.onDisconnected] - (macAddress) 호출. disconnected:mac 수신 시, mac은 소문자
  * @returns {{ client: import('mqtt').MqttClient, stop: function }} 서버에서 종료 시 stop() 호출
  */
 function run(options) {
@@ -267,11 +267,11 @@ function run(options) {
     const hubId = parseHubIdFromTopic(topic);
     if (hubId === null) return;
 
-    const deviceMac = parseDisconnectedPayload(payload);
-    if (deviceMac !== null) {
-      console.log('[mqttCsvSave] disconnected 수신:', { hubId, deviceMac });
+    const macAddress = parseDisconnectedPayload(payload);
+    if (macAddress !== null) {
+      console.log('[mqttCsvSave] disconnected 수신:', { hubId, macAddress });
       if (onDisconnected) {
-        Promise.resolve(onDisconnected(hubId, deviceMac)).catch((err) => {
+        Promise.resolve(onDisconnected(macAddress)).catch((err) => {
           console.error('[mqttCsvSave] onDisconnected 오류:', err.message);
         });
       }

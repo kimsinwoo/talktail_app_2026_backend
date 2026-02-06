@@ -18,30 +18,67 @@ function getLogger() {
 
 /**
  * FCM Admin SDK 초기화
+ * - FCM_ENABLED=true 이거나, 서비스 계정(JSON/파일)이 있으면 시도
+ * - 인증서: FCM_CREDENTIAL_JSON → 파일(FCM_CREDENTIAL_PATH/GOOGLE_APPLICATION_CREDENTIALS) → applicationDefault (GCP 환경)
  * @param {object} config - config.fcm { enabled, credentialPath }
  * @returns {boolean} 실제로 사용 가능 여부
  */
 function init(config) {
   if (initialized) return !!messaging;
   const logger = getLogger();
-  if (!config || !config.fcm || !config.fcm.enabled) {
-    logger.info('[Push] FCM disabled (FCM_ENABLED not set)');
+  const explicitEnabled = config?.fcm?.enabled === true;
+  const hasCredPath = !!(config?.fcm?.credentialPath || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const hasCredJson = !!(process.env.FCM_CREDENTIAL_JSON && process.env.FCM_CREDENTIAL_JSON.trim());
+  const shouldTry = explicitEnabled || hasCredPath || hasCredJson;
+  if (!shouldTry) {
+    logger.info('[Push] FCM disabled. 설정: .env에 FCM_ENABLED=true 와 서비스 계정(파일 경로 또는 FCM_CREDENTIAL_JSON) 추가');
     initialized = true;
     return false;
   }
   try {
     admin = require('firebase-admin');
     const fs = require('fs');
-    const credPath = config.fcm.credentialPath || process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    const resolvedPath = credPath ? path.resolve(credPath) : '';
-    if (resolvedPath && fs.existsSync(resolvedPath)) {
-      const key = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
-      admin.initializeApp({ credential: admin.credential.cert(key) });
-    } else {
-      logger.warn('[Push] FCM enabled but no credential found (set FCM_CREDENTIAL_PATH or GOOGLE_APPLICATION_CREDENTIALS)');
+    let credential = null;
+
+    const credJson = process.env.FCM_CREDENTIAL_JSON;
+    if (credJson && typeof credJson === 'string' && credJson.trim()) {
+      try {
+        const key = JSON.parse(credJson);
+        credential = admin.credential.cert(key);
+      } catch (e) {
+        logger.warn('[Push] FCM_CREDENTIAL_JSON JSON parse error');
+      }
+    }
+    if (!credential) {
+      const credPath = config?.fcm?.credentialPath || process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      if (credPath && credPath.trim()) {
+        const candidates = [
+          path.resolve(credPath.trim()),
+          path.resolve(process.cwd(), credPath.trim()),
+          path.resolve(__dirname, '..', '..', credPath.trim()),
+        ].filter((p, i, arr) => arr.indexOf(p) === i);
+        for (const resolvedPath of candidates) {
+          if (fs.existsSync(resolvedPath)) {
+            const key = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+            credential = admin.credential.cert(key);
+            break;
+          }
+        }
+      }
+    }
+    if (!credential) {
+      try {
+        credential = admin.credential.applicationDefault();
+      } catch (e) {
+        logger.info('[Push] applicationDefault 실패 (GCP 외 환경에서는 정상):', e.message);
+      }
+    }
+    if (!credential) {
+      logger.warn('[Push] FCM 인증서 없음. .env 예: FCM_ENABLED=true, GOOGLE_APPLICATION_CREDENTIALS=./서비스계정.json 또는 FCM_CREDENTIAL_JSON');
       initialized = true;
       return false;
     }
+    admin.initializeApp({ credential });
     messaging = admin.messaging();
     initialized = true;
     logger.info('[Push] FCM initialized');
@@ -75,7 +112,7 @@ async function sendToToken(token, payload) {
   }
   const message = {
     notification: {
-      title: payload.title || '톡테일',
+      title: payload.title || 'TalkTail',
       body: payload.body || '',
     },
     data: dataStr,
@@ -85,6 +122,7 @@ async function sendToToken(token, payload) {
       notification: { sound: 'default', channelId: 'background' },
     },
     apns: {
+      headers: { 'apns-priority': '10' },
       payload: { aps: { sound: 'default', contentAvailable: true } },
       fcmOptions: {},
     },

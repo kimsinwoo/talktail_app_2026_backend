@@ -35,6 +35,7 @@ const express = require('express');
 const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const fs = require('fs');
 const { Server } = require('socket.io');
 
@@ -120,30 +121,34 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// gzip 압축 (JSON 응답 크기 감소)
+app.use(compression());
+
 // Rate Limiting
 app.use('/api', apiLimiter);
 
-// 요청 로깅
+const isDev = config.server.env !== 'production';
+// 요청 로깅 (헬스체크 제외, 프로덕션에서는 경로만)
 app.use((req, res, next) => {
-  logger.info(`${req.method} ${req.path}`, {
-    ip: req.ip,
-    userAgent: req.get('user-agent'),
-  });
+  if (req.path === '/health') return next();
+  logger.info(`${req.method} ${req.path}`, isDev ? { ip: req.ip } : {});
   next();
 });
 
-// POST/PUT/PATCH 수신 시 콘솔에 요청 본문 출력 (비밀번호 마스킹)
+// POST/PUT/PATCH 본문 로깅 (개발 전용, 비밀번호 마스킹, 길이 제한)
 app.use((req, res, next) => {
+  if (!isDev) return next();
   const method = req.method.toUpperCase();
   if (['POST', 'PUT', 'PATCH'].includes(method) && req.body && Object.keys(req.body).length > 0) {
-    const maskKeys = ['password', 'org_pw', 'currentPassword', 'newPassword', 'token'];
+    const maskKeys = ['password', 'org_pw', 'currentPassword', 'newPassword', 'token', 'fcm_token'];
     const safe = {};
     for (const [k, v] of Object.entries(req.body)) {
       const keyLower = k.toLowerCase();
       safe[k] = maskKeys.some((mk) => keyLower.includes(mk.toLowerCase())) ? '***' : v;
     }
-    console.log(`[Backend] 📥 ${method} ${req.path}`);
-    console.log(`[Backend]    Body:`, JSON.stringify(safe).length > 500 ? JSON.stringify(safe).slice(0, 500) + '...' : JSON.stringify(safe));
+    const bodyStr = JSON.stringify(safe);
+    const truncated = bodyStr.length > 400 ? bodyStr.slice(0, 400) + '...' : bodyStr;
+    logger.info(`[Body] ${method} ${req.path}`, { len: bodyStr.length, body: truncated });
   }
   next();
 });
@@ -279,31 +284,14 @@ db.sequelize
           }
         }, 1000);
       }
-      // hub/+/send → backend/data/csv 자동 저장 + disconnected:mac 수신 시 앱 알림
+      // hub/+/send → backend/data/csv 자동 저장 + disconnected:mac 수신 시 디바이스 조회·FCM·상태 업데이트
       try {
         const mqttCsvSave = require('./scripts/mqttCsvSave');
-        const pushService = require('./services/pushService');
+        const deviceDisconnectedService = require('./services/deviceDisconnectedService');
         mqttCsvSaveRunner = mqttCsvSave.run({
-          onDisconnected: async (hubId, deviceMac) => {
+          onDisconnected: async (macAddress) => {
             try {
-              const hub = await db.Hub.findByPk(hubId);
-              if (!hub) {
-                logger.warn('[disconnected] 허브 없음:', hubId);
-                return;
-              }
-              const userEmail = hub.user_email;
-              io.to(`user:${userEmail}`).emit('DEVICE_DISCONNECTED', { hubId, deviceMac });
-              logger.info('[disconnected] Socket.IO 전송:', { hubId, deviceMac, userEmail });
-              const user = await db.User.findByPk(userEmail);
-              if (user && user.fcm_token && typeof user.fcm_token === 'string' && user.fcm_token.trim()) {
-                const res = await pushService.sendToToken(user.fcm_token.trim(), {
-                  title: '📡 디바이스 연결 끊김',
-                  body: '모니터링 디바이스 연결이 끊어졌습니다.',
-                  data: { type: 'device_disconnected', hubId, deviceMac },
-                });
-                if (res.success) logger.info('[disconnected] 푸시 발송:', userEmail);
-                else logger.warn('[disconnected] 푸시 실패:', res.error);
-              }
+              await deviceDisconnectedService.handleDisconnected(macAddress, io);
             } catch (e) {
               logger.error('[disconnected] 처리 오류:', e.message);
             }
