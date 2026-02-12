@@ -58,6 +58,7 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: [],
         comment: '사진 URL 목록 (배열)',
       },
+      //오늘의 체크포인트
       checkpoints: {
         type: DataTypes.JSON,
         allowNull: true,

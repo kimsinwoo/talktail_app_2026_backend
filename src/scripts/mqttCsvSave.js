@@ -195,42 +195,121 @@ function parseDisconnectedPayload(payload) {
 }
 
 /**
- * 단일 메시지 처리: JSON 파싱 → d/t 검증 → CSV append
+ * 문자열 형식 텔레메트리 파싱 (hub_project/back와 동일 형식)
+ * 형식: "device_mac_address-sampling_rate,hr,spo2,temp,battery"
+ * 예: "fd:b3:a4:d5:be:2b-50,50.25,8,95,0"
+ * @param {Buffer|string} payload
+ * @returns {{ hr: number, spo2: number, temp: number, battery: number }|null}
+ */
+function parseStringFormatTelemetry(payload) {
+  let raw;
+  if (Buffer.isBuffer(payload)) {
+    raw = payload.toString('utf8').trim();
+  } else if (typeof payload === 'string') {
+    raw = payload.trim();
+  } else {
+    return null;
+  }
+  const parts = raw.split(',').map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 5) return null;
+
+  const head = parts[0];
+  const dashIdx = head.lastIndexOf('-');
+  if (dashIdx <= 0) return null;
+
+  const hr = Number(parts[1]);
+  const spo2 = Number(parts[2]);
+  const temp = Number(parts[3]);
+  const battery = Number(parts[4]);
+
+  if (!Number.isFinite(hr) || !Number.isFinite(spo2) || !Number.isFinite(temp) || !Number.isFinite(battery)) {
+    return null;
+  }
+  return {
+    hr,
+    spo2,
+    temp,
+    battery,
+  };
+}
+
+/**
+ * 현재 시각을 CSV용 타임스탬프 문자열로 (YYYY-MM-DD HH:mm:ss)
+ */
+function nowTimestamp() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${s}`;
+}
+
+/**
+ * 단일 메시지 처리: JSON 파싱 또는 문자열 형식 → CSV append
  * @param {string} hubId
  * @param {Buffer|string} payload
  */
 async function processMessage(hubId, payload) {
+  // 1) 기존 JSON 형식: { data: [ { d: "envTemp,heartRate,respRate,bodyTemp,activity", t: "timestamp" } ] }
   const parsed = parsePayload(payload);
-  if (parsed === null) return;
+  if (parsed !== null) {
+    const rows = [];
+    for (let i = 0; i < parsed.data.length; i++) {
+      const item = parsed.data[i];
+      if (item === null || typeof item !== 'object') continue;
 
-  const rows = [];
-  for (let i = 0; i < parsed.data.length; i++) {
-    const item = parsed.data[i];
-    if (item === null || typeof item !== 'object') continue;
+      const dStr = item.d;
+      const tStr = item.t;
+      if (typeof dStr !== 'string' || typeof tStr !== 'string') continue;
 
-    const dStr = item.d;
-    const tStr = item.t;
-    if (typeof dStr !== 'string' || typeof tStr !== 'string') continue;
+      const dateKey = parseDateKey(tStr);
+      if (dateKey === null) continue;
 
-    const dateKey = parseDateKey(tStr);
-    if (dateKey === null) continue;
+      const row = parseD(dStr);
+      if (row === null) continue;
 
-    const row = parseD(dStr);
-    if (row === null) continue;
+      rows.push({ dateKey, timestamp: tStr.trim(), row });
+    }
 
-    rows.push({ dateKey, timestamp: tStr.trim(), row });
+    if (rows.length > 0) {
+      for (const { dateKey, timestamp, row } of rows) {
+        const filePath = getCsvFilePath(hubId, dateKey);
+        try {
+          await createFileWithHeaderIfNeeded(filePath);
+          await appendCsvLine(filePath, toCsvLine(timestamp, row));
+        } catch (err) {
+          console.error('[mqttCsvSave] CSV 쓰기 실패:', filePath, err.message);
+        }
+      }
+    }
+    return;
   }
 
-  if (rows.length === 0) return;
-
-  for (const { dateKey, timestamp, row } of rows) {
+  // 2) 문자열 형식: "device_mac-sampling_rate,hr,spo2,temp,battery" → CSV 1행 추가
+  const stringRow = parseStringFormatTelemetry(payload);
+  if (stringRow !== null) {
+    const timestamp = nowTimestamp();
+    const dateKey = parseDateKey(timestamp);
+    if (dateKey === null) return;
+    // CSV 컬럼: timestamp, envTemp, heartRate, respRate, bodyTemp, activity
+    const row = {
+      envTemp: 0,
+      heartRate: stringRow.hr,
+      respRate: stringRow.spo2,
+      bodyTemp: stringRow.temp,
+      activity: stringRow.battery,
+    };
     const filePath = getCsvFilePath(hubId, dateKey);
     try {
       await createFileWithHeaderIfNeeded(filePath);
       await appendCsvLine(filePath, toCsvLine(timestamp, row));
     } catch (err) {
-      console.error('[mqttCsvSave] CSV 쓰기 실패:', filePath, err.message);
+      console.error('[mqttCsvSave] CSV 쓰기 실패 (문자열 형식):', filePath, err.message);
     }
+    return;
   }
 }
 
@@ -314,6 +393,8 @@ module.exports = {
   toCsvLine,
   getCsvFilePath,
   parsePayload,
+  parseStringFormatTelemetry,
+  nowTimestamp,
   processMessage,
   run,
   CSV_HEADER,

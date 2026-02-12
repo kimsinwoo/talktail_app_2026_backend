@@ -84,7 +84,6 @@ const validatePhone = (fieldName = 'phone') => {
 const validateMacAddress = (fieldName = 'mac_address') => {
   return body(fieldName)
     .trim()
-    .notEmpty()
     .withMessage('MAC 주소는 필수입니다.')
     .matches(/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/)
     .withMessage('유효한 MAC 주소 형식이 아닙니다.');

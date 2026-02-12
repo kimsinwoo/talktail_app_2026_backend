@@ -97,10 +97,9 @@ async function handleDisconnected(macAddress, io = null) {
   };
 
   if (io && typeof io.to === 'function') {
-    io.to(`user:${device.user_email}`).emit('DEVICE_DISCONNECTED', {
-      hubId: device.hub_address,
-      deviceMac: device.address,
-    });
+    const payload = { hubId: device.hub_address, deviceMac: device.address };
+    io.to(`user:${device.user_email}`).emit('DEVICE_DISCONNECTED', payload);
+    io.to(`user:${device.user_email}`).emit('device_disconnected', payload);
     logger.info('[deviceDisconnected] Socket.IO 전송:', { address: device.address });
   }
 

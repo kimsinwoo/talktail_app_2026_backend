@@ -77,7 +77,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: config.security.allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], 
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
     credentials: true,
     preflightContinue: false,
@@ -117,9 +117,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
 }));
 
-// Body 파서
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Body 파서 (DoS 완화: 256KB, 업로드는 multipart 사용)
+const bodyLimit = process.env.BODY_LIMIT || '256kb';
+app.use(express.json({ limit: bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
 
 // gzip 압축 (JSON 응답 크기 감소)
 app.use(compression());
@@ -165,7 +166,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API 라우트
+// API 라우
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/auth', require('./routes/auth.oauth')); // OAuth 라우트
 app.use('/api/users', require('./routes/users')); // 사용자 관리 라우트
@@ -178,12 +179,17 @@ app.use('/api/csv', require('./routes/csv'));
 app.use('/api/daily-check', require('./routes/dailyCheck'));
 app.use('/api/diaries', require('./routes/diaries'));
 app.use('/api/home', require('./routes/home'));
+app.use('/api/health-chat', require('./routes/healthChat'));
+app.use('/api/ble', require('./routes/ble'));
+app.use('/api/data', require('./routes/data'));
 
 // MQTT 서비스 초기화: hub_project/back 쪽 MQTT 서비스·TelemetryWorker 가져와서 사용
 let mqttService = null;
 let telemetryWorker = null;
 // npm run dev 시 hub/+/send → CSV 저장 (자동 기동)
 let mqttCsvSaveRunner = null;
+// MVS sync: hub/+/send → Prisma sync + republish hub/{hubId}/receive
+let mvsMqttClient = null;
 
 try {
   const hubBackPath = path.resolve(__dirname, '../../hub_project/back');
@@ -301,6 +307,19 @@ db.sequelize
       } catch (err) {
         logger.warn('MQTT CSV Save not started:', err.message);
       }
+      // MVS MQTT client: hub/+/send → Prisma Device sync, republish pending_devices
+      try {
+        const MvsMqttClient = require('./mqtt/mvsClient');
+        mvsMqttClient = new MvsMqttClient({
+          brokerUrl: config.mqtt?.brokerUrl || process.env.MQTT_BROKER_URL || 'mqtt://127.0.0.1:1883',
+          username: config.mqtt?.username || process.env.MQTT_USERNAME || '',
+          password: config.mqtt?.password || process.env.MQTT_PASSWORD || '',
+        });
+        mvsMqttClient.connect();
+        logger.info('✅ MVS MQTT client started (hub/+/send → Prisma sync + republish)');
+      } catch (err) {
+        logger.warn('MVS MQTT client not started:', err.message);
+      }
     });
   })
   .catch((err) => {
@@ -348,6 +367,10 @@ process.on('SIGTERM', () => {
     if (mqttCsvSaveRunner && typeof mqttCsvSaveRunner.stop === 'function') {
       mqttCsvSaveRunner.stop();
       logger.info('MQTT CSV Save stopped');
+    }
+    if (mvsMqttClient && typeof mvsMqttClient.shutdown === 'function') {
+      mvsMqttClient.shutdown();
+      logger.info('MVS MQTT client stopped');
     }
     db.sequelize.close().then(() => {
       logger.info('Database connection closed');

@@ -28,21 +28,6 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         comment: '측정 시작 시각',
       },
-      ir: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        comment: 'IR 센서 값',
-      },
-      red: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        comment: 'Red 센서 값',
-      },
-      green: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
-        comment: 'Green 센서 값',
-      },
       spo2: {
         type: DataTypes.DECIMAL(5, 2),
         allowNull: true,
@@ -62,6 +47,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: true,
         comment: '배터리 잔량 (%)',
+      },
+      payload: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        comment: '원본 페이로드 (JSON)',
       },
     },
     {

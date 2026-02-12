@@ -23,15 +23,17 @@ const errorHandler = (err, req, res, next) => {
     return next(err);
   }
 
-  // 로깅
-  logger.error('Error occurred:', {
+  // 로깅 (파일 + 콘솔에 항상 출력해 원인 파악 가능하게)
+  const errMeta = {
     message: err.message,
     stack: err.stack,
     url: req.url,
     method: req.method,
     ip: req.ip,
     user: req.user?.email || 'anonymous',
-  });
+  };
+  logger.error('Error occurred:', errMeta);
+  console.error('[Backend] Error occurred:', err.message, err.stack);
 
   // 운영 환경이 아닌 경우 스택 트레이스 포함
   const isDevelopment = config.server.env === 'development';

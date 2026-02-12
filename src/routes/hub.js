@@ -2,8 +2,6 @@ const express = require('express');
 const { Op } = require('sequelize');
 const db = require('../models');
 const { verifyToken } = require('../middlewares/auth');
-const { validateMacAddress, handleValidationErrors } = require('../middlewares/validator');
-const { body } = require('express-validator');
 const { AppError } = require('../middlewares/errorHandler');
 const { apiLimiter } = require('../middlewares/rateLimiter');
 const logger = require('../utils/logger');
@@ -85,11 +83,6 @@ router.get('/:hubAddress', async (req, res, next) => {
   try {
     const { hubAddress } = req.params;
 
-    // MAC 주소 형식 검증
-    if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(hubAddress)) {
-      throw new AppError('유효한 MAC 주소 형식이 아닙니다.', 400);
-    }
-
     const hub = await db.Hub.findOne({
       where: {
         address: hubAddress,
@@ -136,28 +129,9 @@ router.get('/:hubAddress', async (req, res, next) => {
  * 허브 등록
  * POST /api/hub
  */
-router.post(
-  '/',
-  [
-    body('mac_address')
-      .trim()
-      .notEmpty()
-      .withMessage('MAC 주소는 필수입니다.')
-      .matches(/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/)
-      .withMessage('유효한 MAC 주소 형식이 아닙니다.'),
-    body('name')
-      .trim()
-      .notEmpty()
-      .withMessage('허브 이름은 필수입니다.')
-      .isLength({ min: 1, max: 50 })
-      .withMessage('허브 이름은 1자 이상 50자 이하여야 합니다.'),
-    body('wifi_id').optional().trim(),
-    body('wifi_password').optional().trim(),
-  ],
-  handleValidationErrors,
-  async (req, res, next) => {
-    try {
-      const { mac_address, name, wifi_id, wifi_password, user_email } = req.body;
+router.post('/', async (req, res, next) => {
+  try {
+    const { mac_address, name, wifi_id, wifi_password, user_email } = req.body;
 
       // 중복 확인
       const existingHub = await db.Hub.findByPk(mac_address);
@@ -206,37 +180,21 @@ router.post(
           status: hub.status,
         },
       });
-    } catch (error) {
-      next(error);
-    }
+  } catch (error) {
+    next(error);
   }
-);
+});
 
 /**
  * 허브 수정
  * PUT /api/hub/:hubAddress
  */
-router.put(
-  '/:hubAddress',
-  [
-    body('name')
-      .optional()
-      .trim()
-      .isLength({ min: 1, max: 50 })
-      .withMessage('허브 이름은 1자 이상 50자 이하여야 합니다.'),
-  ],
-  handleValidationErrors,
-  async (req, res, next) => {
-    try {
-      const { hubAddress } = req.params;
-      const { name } = req.body;
+router.put('/:hubAddress', async (req, res, next) => {
+  try {
+    const { hubAddress } = req.params;
+    const { name } = req.body;
 
-      // MAC 주소 형식 검증
-      if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(hubAddress)) {
-        throw new AppError('유효한 MAC 주소 형식이 아닙니다.', 400);
-      }
-
-      const hub = await db.Hub.findOne({
+    const hub = await db.Hub.findOne({
         where: {
           address: hubAddress,
           user_email: req.user.email, // 소유권 확인
@@ -273,17 +231,84 @@ router.put(
 );
 
 /**
+ * 허브의 모든 텔레메트리 삭제
+ * POST /api/hub/:hubAddress/delete_all_data
+ */
+router.post('/:hubAddress/delete_all_data', async (req, res, next) => {
+  try {
+    const { hubAddress } = req.params;
+    const hub = await db.Hub.findOne({
+      where: { address: hubAddress, user_email: req.user.email },
+    });
+    if (!hub) throw new AppError('허브를 찾을 수 없습니다.', 404);
+
+    const deleted = await db.Telemetry.destroy({
+      where: { hub_address: hubAddress },
+    });
+
+    const mqttService = req.app.get('mqtt');
+    if (mqttService && typeof mqttService.publish === 'function') {
+      const topic = `hub/${hubAddress}/receive`;
+      mqttService.publish(topic, 'delete:all', { qos: 1 });
+    }
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${req.user.email}`).emit('hub_data_deleted', { hubAddress, deleted });
+    }
+
+    logger.info('Hub delete_all_data', { hubAddress, deleted, userEmail: req.user.email });
+    res.json({ success: true, message: '허브 텔레메트리 전체 삭제 완료.', deleted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * 허브 상태 업데이트
+ * PATCH /api/hub/:hubAddress/status
+ * Body: { status: 'online' | 'offline' | 'unknown', lastSeenAt?: string }
+ */
+router.patch('/:hubAddress/status', async (req, res, next) => {
+  try {
+    const { hubAddress } = req.params;
+    const { status, lastSeenAt } = req.body;
+    const hub = await db.Hub.findOne({
+      where: { address: hubAddress, user_email: req.user.email },
+    });
+    if (!hub) throw new AppError('허브를 찾을 수 없습니다.', 404);
+
+    if (status != null) hub.status = status;
+    if (lastSeenAt != null) hub.lastSeenAt = new Date(lastSeenAt);
+    await hub.save();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${req.user.email}`).emit('hub_status_updated', {
+        hubAddress,
+        status: hub.status,
+        lastSeenAt: hub.lastSeenAt,
+      });
+    }
+    res.json({
+      success: true,
+      data: {
+        address: hub.address,
+        status: hub.status,
+        lastSeenAt: hub.lastSeenAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * 허브 삭제
  * DELETE /api/hub/:hubAddress
  */
 router.delete('/:hubAddress', async (req, res, next) => {
   try {
     const { hubAddress } = req.params;
-
-    // MAC 주소 형식 검증
-    if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(hubAddress)) {
-      throw new AppError('유효한 MAC 주소 형식이 아닙니다.', 400);
-    }
 
     const hub = await db.Hub.findOne({
       where: {

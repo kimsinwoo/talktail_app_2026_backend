@@ -3,18 +3,11 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../models');
 const { verifyToken } = require('../middlewares/auth');
-const { authLimiter, signupLimiter, passwordResetLimiter } = require('../middlewares/rateLimiter');
+const { authLimiter, signupLimiter, passwordResetLimiter, tokenRefreshLimiter } = require('../middlewares/rateLimiter');
+const refreshTokenService = require('../services/refreshTokenService');
 const emailService = require('../services/emailService');
 const passwordResetStore = require('../utils/passwordResetStore');
-const {
-  validateEmail,
-  validatePassword,
-  validateName,
-  validatePhone,
-  validateAddress,
-  handleValidationErrors,
-} = require('../middlewares/validator');
-const { body } = require('express-validator');
+const passwordResetService = require('../services/passwordResetService');
 const { AppError } = require('../middlewares/errorHandler');
 const config = require('../config');
 const logger = require('../utils/logger');
@@ -26,22 +19,11 @@ const router = express.Router();
  * POST /api/auth/signup
  * POST /api/auth/register (앱 호환용 별칭)
  */
-const signupValidations = [
-  validateEmail(),
-  validatePassword(),
-  validateName(),
-  validatePhone(),
-  ...validateAddress(),
-  body('marketingAgreed')
-    .optional()
-    .isBoolean()
-    .withMessage('마케팅 동의는 boolean 값이어야 합니다.'),
-];
-
 async function signupController(req, res, next) {
     try {
       const {
         email,
+        username,
         password,
         name,
         phone,
@@ -50,10 +32,24 @@ async function signupController(req, res, next) {
         detail_address,
       } = req.body;
 
+      if (!username || typeof username !== 'string' || !username.trim()) {
+        throw new AppError('사용자 아이디를 입력해주세요.', 400);
+      }
+      const trimmedUsername = username.trim();
+      if (!/^[a-zA-Z0-9_]{4,20}$/.test(trimmedUsername)) {
+        throw new AppError('아이디는 4~20자, 영문/숫자/언더스코어만 사용 가능합니다.', 400);
+      }
+
       // 이메일 중복 확인
-      const existingUser = await db.User.findByPk(email);
-      if (existingUser) {
+      const existingByEmail = await db.User.findByPk(email);
+      if (existingByEmail) {
         throw new AppError('이미 등록된 이메일입니다.', 409);
+      }
+
+      // 아이디 중복 확인
+      const existingByUsername = await db.User.findOne({ where: { username: trimmedUsername } });
+      if (existingByUsername) {
+        throw new AppError('이미 사용 중인 아이디입니다.', 409);
       }
 
       // 비밀번호 해싱
@@ -62,6 +58,7 @@ async function signupController(req, res, next) {
       // 사용자 생성
       const user = await db.User.create({
         email,
+        username: trimmedUsername,
         password: hashedPassword,
         name,
         phone,
@@ -99,8 +96,31 @@ async function signupController(req, res, next) {
   }
 }
 
-router.post('/signup', signupLimiter, signupValidations, handleValidationErrors, signupController);
-router.post('/register', signupLimiter, signupValidations, handleValidationErrors, signupController);
+router.post('/signup', signupLimiter, signupController);
+router.post('/register', signupLimiter, signupController);
+
+/**
+ * 아이디(username) 중복 확인
+ * GET /api/auth/check-username?username=xxx
+ */
+router.get('/check-username', authLimiter, async (req, res, next) => {
+  try {
+    const username = (req.query.username || '').trim();
+    if (!username) {
+      throw new AppError('아이디를 입력해주세요.', 400);
+    }
+    if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
+      return res.json({ success: true, available: false, message: '아이디는 4~20자, 영문/숫자/언더스코어만 사용 가능합니다.' });
+    }
+    const existing = await db.User.findOne({ where: { username } });
+    if (existing) {
+      return res.json({ success: true, available: false, message: '이미 사용 중인 아이디입니다.' });
+    }
+    return res.json({ success: true, available: true, message: '사용 가능한 아이디입니다.' });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * 로그인
@@ -110,31 +130,30 @@ router.post(
   '/login',
   authLimiter,
   (req, res, next) => {
-    console.log('[Backend] 📥 POST /auth/login 수신', { email: req.body?.email ? `${req.body.email.slice(0, 3)}***` : '(없음)', hasPassword: !!req.body?.password });
+    console.log('[Backend] 📥 POST /auth/login 수신', { loginId: (req.body?.loginId || req.body?.email) ? `${String(req.body.loginId || req.body.email).slice(0, 3)}***` : '(없음)', hasPassword: !!req.body?.password });
     next();
   },
-  [validateEmail(), validatePassword()],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
-      const { email, password } = req.body;
+      const { email, password, loginId } = req.body;
+      const raw = (loginId != null ? loginId : email)?.trim();
+      if (!raw) {
+        throw new AppError('이메일 또는 아이디를 입력해주세요.', 400);
+      }
 
-      // 이메일 정규화 (소문자로 변환, 공백 제거)
-      const normalizedEmail = email?.trim().toLowerCase();
+      const isEmail = raw.includes('@');
+      let user;
+      if (isEmail) {
+        const normalizedEmail = raw.toLowerCase();
+        user = await db.User.findByPk(normalizedEmail);
+      } else {
+        user = await db.User.findOne({ where: { username: raw } });
+      }
 
-      logger.info('Login attempt', { 
-        originalEmail: email, 
-        normalizedEmail, 
-        passwordLength: password?.length 
-      });
+      logger.info('Login attempt', { loginId: raw.slice(0, 3) + '***', isEmail, passwordLength: password?.length });
 
-      // 사용자 조회 (이메일은 소문자로 저장되어야 함)
-      const user = await db.User.findByPk(normalizedEmail);
       if (!user) {
-        logger.warn('User not found', { normalizedEmail });
-        // 모든 사용자 이메일 확인 (디버깅용)
-        const allUsers = await db.User.findAll({ attributes: ['email'] });
-        logger.warn('Available users', { emails: allUsers.map(u => u.email) });
+        logger.warn('User not found', { loginId: raw });
         throw new AppError('이메일 또는 비밀번호가 올바르지 않습니다.', 401);
       }
 
@@ -147,9 +166,9 @@ router.post(
 
       // 비밀번호 확인
       const isPasswordValid = await bcrypt.compare(password, user.password);
-      logger.info('Password validation', { email: normalizedEmail, isValid: isPasswordValid });
+      logger.info('Password validation', { loginId: raw.slice(0, 3) + '***', isValid: isPasswordValid });
       if (!isPasswordValid) {
-        logger.warn('Failed login attempt - invalid password', { email: normalizedEmail });
+        logger.warn('Failed login attempt - invalid password', { loginId: raw });
         throw new AppError('이메일 또는 비밀번호가 올바르지 않습니다.', 401);
       }
 
@@ -158,22 +177,19 @@ router.post(
       // 마지막 로그인 시간 업데이트
       await user.update({ lastLoginAt: new Date() });
 
-      // JWT 토큰 생성
+      // Access 토큰 생성
       const token = jwt.sign(
         { email: user.email, name: user.name, role: user.role },
         config.jwt.secret,
         { expiresIn: config.jwt.expiresIn }
       );
 
-      // Refresh 토큰 생성 (선택사항)
-      const refreshToken = jwt.sign(
-        { email: user.email },
-        config.jwt.secret,
-        { expiresIn: config.jwt.refreshExpiresIn }
+      // Refresh 토큰 생성 및 DB 저장 (rotation용)
+      const refreshToken = await refreshTokenService.createRefreshToken(
+        user.email,
+        req.get('user-agent'),
+        req.ip
       );
-
-      // Refresh 토큰 저장
-      await user.update({ refreshToken });
 
       logger.info('User logged in', { email: user.email });
       console.log('[Backend] ✅ 로그인 성공 200', user.email);
@@ -199,42 +215,59 @@ router.post(
 );
 
 /**
- * 토큰 갱신
+ * 토큰 갱신 (Refresh Token Rotation)
  * POST /api/auth/refresh
  */
-router.post('/refresh', async (req, res, next) => {
+router.post('/refresh', tokenRefreshLimiter, async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
+    const raw = req.body.refreshToken;
+    if (!raw) {
       throw new AppError('Refresh 토큰이 필요합니다.', 400);
     }
 
-    // Refresh 토큰 검증
+    const tokenHash = refreshTokenService.hashToken(raw);
+    const reused = await refreshTokenService.isTokenReused(tokenHash);
+    if (reused) {
+      const record = await db.RefreshToken.findOne({ where: { tokenHash } });
+      if (record) await refreshTokenService.revokeAllForUser(record.userId);
+      logger.warn('Refresh token reuse detected', { userId: record?.userId });
+      throw new AppError('유효하지 않은 refresh 토큰입니다.', 401);
+    }
+
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, config.jwt.secret);
-    } catch (error) {
+      decoded = jwt.verify(raw, config.jwt.secret);
+    } catch {
       throw new AppError('유효하지 않은 refresh 토큰입니다.', 401);
     }
 
-    // 사용자 조회
-    const user = await db.User.findByPk(decoded.email);
-    if (!user || user.refreshToken !== refreshToken) {
+    const tokenRecord = await refreshTokenService.findValidToken(tokenHash);
+    if (!tokenRecord) {
       throw new AppError('유효하지 않은 refresh 토큰입니다.', 401);
     }
 
-    // 새 토큰 생성
-    const newToken = jwt.sign(
+    const user = await db.User.findByPk(tokenRecord.userId);
+    if (!user) {
+      throw new AppError('유효하지 않은 refresh 토큰입니다.', 401);
+    }
+
+    await refreshTokenService.revokeTokenById(tokenRecord.id);
+    const newAccess = jwt.sign(
       { email: user.email, name: user.name, role: user.role },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn }
+    );
+    const newRefresh = await refreshTokenService.createRefreshToken(
+      user.email,
+      req.get('user-agent'),
+      req.ip
     );
 
     res.json({
       success: true,
       data: {
-        token: newToken,
+        token: newAccess,
+        refreshToken: newRefresh,
       },
     });
   } catch (error) {
@@ -248,14 +281,8 @@ router.post('/refresh', async (req, res, next) => {
  */
 router.post('/logout', verifyToken, async (req, res, next) => {
   try {
-    // Refresh 토큰 삭제
-    await db.User.update(
-      { refreshToken: null },
-      { where: { email: req.user.email } }
-    );
-
+    await refreshTokenService.revokeAllForUser(req.user.email);
     logger.info('User logged out', { email: req.user.email });
-
     res.json({
       success: true,
       message: '로그아웃되었습니다.',
@@ -297,18 +324,6 @@ router.get('/me', verifyToken, async (req, res, next) => {
 router.post(
   '/change-password',
   verifyToken,
-  [
-    validatePassword('currentPassword'),
-    validatePassword('newPassword'),
-    body('newPasswordConfirm')
-      .custom((value, { req }) => {
-        if (value !== req.body.newPassword) {
-          throw new Error('새 비밀번호가 일치하지 않습니다.');
-        }
-        return true;
-      }),
-  ],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
       const { currentPassword, newPassword } = req.body;
@@ -350,15 +365,6 @@ router.post(
 router.put(
   '/update',
   verifyToken,
-  [
-    body('password')
-      .trim()
-      .notEmpty()
-      .withMessage('비밀번호는 필수입니다.')
-      .isLength({ min: 8 })
-      .withMessage('비밀번호는 8자 이상이어야 합니다.'),
-  ],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
       const { password } = req.body;
@@ -399,18 +405,10 @@ function maskEmail(email) {
 router.post(
   '/find-id',
   authLimiter,
-  [
-    body('name').trim().notEmpty().withMessage('이름을 입력해 주세요.'),
-    body('phone').trim().notEmpty().withMessage('전화번호를 입력해 주세요.'),
-  ],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
       const { name, phone } = req.body;
-      const normalizedPhone = normalizePhone(phone);
-      if (normalizedPhone.length < 10) {
-        throw new AppError('올바른 전화번호를 입력해 주세요.', 400);
-      }
+      const normalizedPhone = normalizePhone(phone || '');
       const users = await db.User.findAll({
         where: { name: name.trim() },
         attributes: ['email', 'phone'],
@@ -436,43 +434,45 @@ router.post(
 );
 
 /**
- * 비밀번호 재설정 요청 (인증 코드 발송)
+ * 비밀번호 재설정 요청 (DB 토큰 + 링크 발송, 사용자 열거 방지)
  * POST /api/auth/forgot-password
  * Body: { email }
+ * 존재 여부와 관계없이 동일 응답
  */
 router.post(
   '/forgot-password',
   passwordResetLimiter,
-  [body('email').trim().isEmail().withMessage('올바른 이메일을 입력해 주세요.')],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
-      const email = req.body.email.trim().toLowerCase();
-      const user = await db.User.findByPk(email);
-      if (!user || !user.password) {
-        return res.status(200).json({
-          success: false,
-          message: '해당 이메일로 가입된 계정이 없거나 비밀번호 로그인을 사용하지 않습니다.',
-        });
+      const email = (req.body.email || '').trim().toLowerCase();
+      if (!email) {
+        throw new AppError('이메일을 입력해 주세요.', 400);
       }
       if (!emailService.isEmailConfigured()) {
         return res.status(200).json({
-          success: false,
-          message: '이메일 발송이 설정되지 않았습니다. 고객센터(talktail@creamoff.co.kr)로 문의해 주세요.',
+          success: true,
+          message: '해당 이메일로 안내를 보냈습니다.',
         });
       }
-      const code = passwordResetStore.generateCode();
-      passwordResetStore.set(email, code);
-      const sent = await emailService.sendPasswordResetEmail(email, code);
-      if (!sent) {
-        return res.status(200).json({
-          success: false,
-          message: '이메일 발송에 실패했습니다. 잠시 후 다시 시도하거나 고객센터로 문의해 주세요.',
-        });
+      const user = await db.User.findByPk(email);
+      if (user && user.password) {
+        try {
+          const { token, expiresAt } = await passwordResetService.createResetToken(email);
+          const sent = await emailService.sendPasswordResetLink(
+            email,
+            token,
+            passwordResetService.TOKEN_EXPIRY_MINUTES
+          );
+          if (!sent) {
+            logger.warn('Password reset email failed', { email: email.slice(0, 3) + '***' });
+          }
+        } catch (err) {
+          logger.error('Password reset token create failed', { message: err.message });
+        }
       }
       res.json({
         success: true,
-        message: '해당 이메일로 인증 코드를 발송했습니다. 10분 내에 입력해 주세요.',
+        message: '해당 이메일로 안내를 보냈습니다.',
       });
     } catch (error) {
       next(error);
@@ -481,45 +481,50 @@ router.post(
 );
 
 /**
- * 비밀번호 재설정 (인증 코드 확인 후 새 비밀번호 설정)
+ * 비밀번호 재설정 (DB 토큰 소비, 시도 제한 적용)
  * POST /api/auth/reset-password
- * Body: { email, code, newPassword }
+ * Body: { token, newPassword } (또는 레거시: { email, code, newPassword })
  */
 router.post(
   '/reset-password',
   passwordResetLimiter,
-  [
-    body('email').trim().isEmail().withMessage('올바른 이메일을 입력해 주세요.'),
-    body('code').trim().notEmpty().withMessage('인증 코드를 입력해 주세요.'),
-    body('newPassword')
-      .trim()
-      .notEmpty()
-      .withMessage('새 비밀번호는 필수입니다.')
-      .isLength({ min: 8 })
-      .withMessage('비밀번호는 8자 이상이어야 합니다.'),
-  ],
-  handleValidationErrors,
   async (req, res, next) => {
     try {
-      const { email, code, newPassword } = req.body;
-      const normalizedEmail = email.trim().toLowerCase();
-      const storedEmail = passwordResetStore.consume(code);
-      if (!storedEmail || storedEmail !== normalizedEmail) {
+      const { token, newPassword, email, code } = req.body;
+      let resolvedEmail = null;
+
+      if (token && typeof token === 'string') {
+        resolvedEmail = await passwordResetService.consumeResetToken(token.trim());
+      } else if (email && code) {
+        const normalizedEmail = (email || '').trim().toLowerCase();
+        const storedEmail = passwordResetStore.consume(String(code));
+        if (storedEmail && storedEmail === normalizedEmail) {
+          resolvedEmail = normalizedEmail;
+        }
+      }
+
+      if (!resolvedEmail) {
         return res.status(400).json({
           success: false,
-          message: '인증 코드가 올바르지 않거나 만료되었습니다. 다시 요청해 주세요.',
+          message: '링크가 만료되었거나 잘못되었습니다. 다시 요청해 주세요.',
         });
       }
-      const user = await db.User.findByPk(normalizedEmail);
+
+      const user = await db.User.findByPk(resolvedEmail);
       if (!user) {
         return res.status(400).json({
           success: false,
-          message: '사용자를 찾을 수 없습니다.',
+          message: '링크가 만료되었거나 잘못되었습니다. 다시 요청해 주세요.',
         });
       }
+
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+        throw new AppError('새 비밀번호는 8자 이상이어야 합니다.', 400);
+      }
+
       const hashedPassword = await bcrypt.hash(newPassword, config.security.bcryptRounds);
       await user.update({ password: hashedPassword });
-      logger.info('Password reset completed', { email: normalizedEmail });
+      logger.info('Password reset completed', { email: resolvedEmail.slice(0, 3) + '***' });
       res.json({
         success: true,
         message: '비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요.',

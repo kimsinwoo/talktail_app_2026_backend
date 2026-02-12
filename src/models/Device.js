@@ -15,8 +15,8 @@ module.exports = (sequelize, DataTypes) => {
       },
       hub_address: {
         type: DataTypes.STRING(100),
-        allowNull: false,
-        comment: '연결된 허브 주소',
+        allowNull: true,
+        comment: '연결된 허브 주소 (null이면 BLE 1:N 직접 연결)',
       },
       user_email: {
         type: DataTypes.STRING(100),
@@ -33,6 +33,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
         comment: '마지막 접속 시간',
+      },
+      lastConnectedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: '마지막 연결 시각 (앱/허브와 연결된 시점)',
       },
       battery: {
         type: DataTypes.INTEGER,

@@ -3,9 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../models');
 const { verifyToken } = require('../middlewares/auth');
-const { validateMacAddress, handleValidationErrors } = require('../middlewares/validator');
 const { AppError } = require('../middlewares/errorHandler');
 const { apiLimiter } = require('../middlewares/rateLimiter');
+const { resolvePathWithinBase, assertFileExists } = require('../middlewares/pathSecurity');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -25,12 +25,6 @@ router.get('/device/:deviceAddress', async (req, res, next) => {
   try {
     const { deviceAddress } = req.params;
 
-    // MAC 주소 형식 검증
-    if (!/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test(deviceAddress)) {
-      throw new AppError('유효한 MAC 주소 형식이 아닙니다.', 400);
-    }
-
-    // 디바이스 소유권 확인
     const device = await db.Device.findOne({
       where: {
         address: deviceAddress,
@@ -97,36 +91,13 @@ router.get('/device/:deviceAddress', async (req, res, next) => {
  */
 router.get('/download', async (req, res, next) => {
   try {
-    const { path: filePath } = req.query;
-
-    if (!filePath) {
-      throw new AppError('파일 경로가 필요합니다.', 400);
-    }
-
-    // 경로 보안 검증 (상위 디렉토리 접근 방지)
-    const normalizedPath = path.normalize(filePath);
-    if (normalizedPath.includes('..')) {
-      throw new AppError('잘못된 파일 경로입니다.', 400);
-    }
-
     const userCsvDir = path.join(CSV_BASE_DIR, req.user.email.replace(/[^a-zA-Z0-9@._-]/g, '_'));
-    const fullPath = path.join(userCsvDir, normalizedPath);
-
-    // 사용자 디렉토리 내의 파일인지 확인
-    if (!fullPath.startsWith(userCsvDir)) {
-      throw new AppError('접근 권한이 없습니다.', 403);
-    }
-
-    if (!fs.existsSync(fullPath)) {
-      throw new AppError('파일을 찾을 수 없습니다.', 404);
-    }
-
-    res.download(fullPath, path.basename(fullPath), err => {
+    const fullPath = resolvePathWithinBase(userCsvDir, req.query.path);
+    assertFileExists(fullPath);
+    res.download(fullPath, path.basename(fullPath), (err) => {
       if (err) {
         logger.error('CSV download error:', err);
-        if (!res.headersSent) {
-          next(err);
-        }
+        if (!res.headersSent) next(err);
       }
     });
   } catch (error) {
@@ -140,30 +111,9 @@ router.get('/download', async (req, res, next) => {
  */
 router.delete('/', async (req, res, next) => {
   try {
-    const { path: filePath } = req.query;
-
-    if (!filePath) {
-      throw new AppError('파일 경로가 필요합니다.', 400);
-    }
-
-    // 경로 보안 검증
-    const normalizedPath = path.normalize(filePath);
-    if (normalizedPath.includes('..')) {
-      throw new AppError('잘못된 파일 경로입니다.', 400);
-    }
-
     const userCsvDir = path.join(CSV_BASE_DIR, req.user.email.replace(/[^a-zA-Z0-9@._-]/g, '_'));
-    const fullPath = path.join(userCsvDir, normalizedPath);
-
-    // 사용자 디렉토리 내의 파일인지 확인
-    if (!fullPath.startsWith(userCsvDir)) {
-      throw new AppError('접근 권한이 없습니다.', 403);
-    }
-
-    if (!fs.existsSync(fullPath)) {
-      throw new AppError('파일을 찾을 수 없습니다.', 404);
-    }
-
+    const fullPath = resolvePathWithinBase(userCsvDir, req.query.path);
+    assertFileExists(fullPath);
     fs.unlinkSync(fullPath);
 
     logger.info('CSV file deleted', { filePath: normalizedPath, userEmail: req.user.email });

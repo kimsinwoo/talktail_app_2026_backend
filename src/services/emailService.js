@@ -52,11 +52,40 @@ async function sendPasswordResetEmail(to, code) {
   }
 }
 
+/**
+ * 비밀번호 재설정 링크 이메일 발송 (토큰 기반, DB 저장용)
+ * @param {string} to - 수신 이메일
+ * @param {string} resetToken - 재설정 토큰 (URL에 포함)
+ * @param {number} expiresInMinutes - 유효 시간(분)
+ * @returns {Promise<boolean>}
+ */
+async function sendPasswordResetLink(to, resetToken, expiresInMinutes = 15) {
+  const trans = getTransporter();
+  if (!trans) return false;
+  const baseUrl = (process.env.PASSWORD_RESET_BASE_URL || '').trim() || 'https://app.talktail.com';
+  const resetUrl = `${baseUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(resetToken)}`;
+  const from = config.email?.from || 'noreply@talktail.com';
+  try {
+    await trans.sendMail({
+      from: `Talktail <${from}>`,
+      to,
+      subject: '[Talktail] 비밀번호 재설정 링크',
+      text: `비밀번호 재설정을 요청하셨습니다. 아래 링크를 클릭하여 새 비밀번호를 설정해 주세요.\n\n${resetUrl}\n\n유효 시간: ${expiresInMinutes}분\n본인이 요청한 것이 아니라면 이 메일을 무시해 주세요.`,
+      html: `<p>비밀번호 재설정을 요청하셨습니다. 아래 링크를 클릭하여 새 비밀번호를 설정해 주세요.</p><p><a href="${resetUrl}">비밀번호 재설정하기</a></p><p>유효 시간: ${expiresInMinutes}분</p><p>본인이 요청한 것이 아니라면 이 메일을 무시해 주세요.</p>`,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Email] send error:', err.message);
+    return false;
+  }
+}
+
 function isEmailConfigured() {
   return !!getTransporter();
 }
 
 module.exports = {
   sendPasswordResetEmail,
+  sendPasswordResetLink,
   isEmailConfigured,
 };

@@ -44,6 +44,7 @@ db.Record = require('./Record')(sequelize, Sequelize);
 // 디바이스 및 허브 관련
 db.Hub = require('./Hub')(sequelize, Sequelize);
 db.Device = require('./Device')(sequelize, Sequelize);
+db.MvsDevice = require('./MvsDevice')(sequelize, Sequelize);
 db.Telemetry = require('./Telemetry')(sequelize, Sequelize);
 
 // AI 분석 관련 (cream-off)
@@ -70,6 +71,7 @@ db.DailyCheck = require('./DailyCheck')(sequelize, Sequelize);
 // OAuth 관련
 db.OAuthAccount = require('./OAuthAccount')(sequelize, Sequelize);
 db.RefreshToken = require('./RefreshToken')(sequelize, Sequelize);
+db.PasswordResetToken = require('./PasswordResetToken')(sequelize, Sequelize);
 
 // 관계 설정
 Object.keys(db).forEach((modelName) => {

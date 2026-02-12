@@ -10,6 +10,12 @@ module.exports = (sequelize, DataTypes) => {
           isEmail: true,
         },
       },
+      username: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        unique: true,
+        comment: '로그인용 사용자 아이디 (이메일과 별도, 회원가입 시 설정)',
+      },
       password: {
         type: DataTypes.STRING(255), // bcrypt 해시
         allowNull: true, // OAuth 사용자는 비밀번호가 없을 수 있음
@@ -147,6 +153,10 @@ module.exports = (sequelize, DataTypes) => {
           unique: true,
         },
         {
+          fields: ['username'],
+          unique: true,
+        },
+        {
           fields: ['role'],
         },
         {
@@ -203,6 +213,13 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'userId',
         targetKey: 'email',
         as: 'RefreshTokens',
+      });
+
+    // PasswordResetToken 관계
+      User.hasMany(db.PasswordResetToken, {
+        foreignKey: 'userId',
+        targetKey: 'email',
+        as: 'PasswordResetTokens',
       });
   };
 

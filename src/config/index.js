@@ -8,22 +8,32 @@ module.exports = {
     host: process.env.HOST || '0.0.0.0',
   },
 
-  // JWT 설정
-  jwt: {
-    secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
-    expiresIn: process.env.JWT_EXPIRES_IN || '15m', // Access Token: 15분
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d', // Refresh Token: 30일
-  },
+  // JWT 설정 (시크릿 fallback 없음: 미설정 시 기동 실패)
+  jwt: (() => {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.trim() === '') {
+      throw new Error('JWT_SECRET environment variable is required. Do not use a default.');
+    }
+    if (secret.length < 32) {
+      throw new Error('JWT_SECRET must be at least 32 characters.');
+    }
+    return {
+      secret,
+      expiresIn: process.env.JWT_EXPIRES_IN || '15m',
+      refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+    };
+  })(),
 
   // 보안 설정
   security: {
     bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
+    rateLimitDisabled: process.env.RATE_LIMIT_DISABLED === 'true' || process.env.RATE_LIMIT_DISABLED === '1',
     rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15분
-    rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10), // 15분당 100회
-    corsOrigin: process.env.CORS_ORIGIN || '*',
+    rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '10000', 10), // 15분당 10000회 (429 방지)
+    corsOrigin: process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : '*'),
     allowedOrigins: process.env.ALLOWED_ORIGINS
-      ? process.env.ALLOWED_ORIGINS.split(',')
-      : ['http://localhost:3000', 'http://localhost:5173'],
+      ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+      : (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:3000', 'http://localhost:5173']),
   },
 
   // MQTT 설정 (hub/+/data 구독 → 일별 CSV 저장)
