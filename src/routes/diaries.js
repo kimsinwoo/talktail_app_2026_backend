@@ -180,6 +180,7 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
+    console.log("req.body : ", req.body);
     const { petCode, date, title, content, mood, weather, activities, photos, checkpoints } = req.body;
     if (!petCode || !date || !title || !content || !mood || !weather) throw new AppError('petCode, date, title, content, mood, weather 필수', 400);
     const email = req.user.email;

@@ -1,7 +1,7 @@
 {
   "development": {
     "username": "root",
-    "password": "",
+    "password": "zmfladhvm",
     "database": "talktail_db",
     "host": "127.0.0.1",
     "port": 3306,
@@ -14,7 +14,7 @@
   },
   "test": {
     "username": "root",
-    "password": "",
+    "password": "zmfladhvm",
     "database": "talktail_db_test",
     "host": "127.0.0.1",
     "port": 3306,
@@ -27,7 +27,7 @@
   },
   "production": {
     "username": "root",
-    "password": "",
+    "password": "zmfladhvm",
     "database": "talktail_db",
     "host": "127.0.0.1",
     "port": 3306,

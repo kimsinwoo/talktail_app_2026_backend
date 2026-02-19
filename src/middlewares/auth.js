@@ -33,10 +33,14 @@ const verifyToken = async (req, res, next) => {
       decoded = jwt.verify(token, config.jwt.secret);
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
-        throw new AppError('토큰이 만료되었습니다.', 401);
+        const expiredError = new AppError('토큰이 만료되었습니다.', 401);
+        expiredError.errorCode = 'TOKEN_EXPIRED';
+        throw expiredError;
       }
       if (error.name === 'JsonWebTokenError') {
-        throw new AppError('유효하지 않은 토큰입니다.', 401);
+        const invalidError = new AppError('유효하지 않은 토큰입니다.', 401);
+        invalidError.errorCode = 'INVALID_TOKEN';
+        throw invalidError;
       }
       throw error;
     }

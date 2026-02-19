@@ -23,6 +23,10 @@ const errorHandler = (err, req, res, next) => {
     return next(err);
   }
 
+  // 토큰 만료 에러는 일반적인 상황이므로 로깅 레벨을 낮춤
+  const isTokenExpired = (err instanceof AppError && err.errorCode === 'TOKEN_EXPIRED') || 
+                         err.name === 'TokenExpiredError';
+  
   // 로깅 (파일 + 콘솔에 항상 출력해 원인 파악 가능하게)
   const errMeta = {
     message: err.message,
@@ -32,19 +36,40 @@ const errorHandler = (err, req, res, next) => {
     ip: req.ip,
     user: req.user?.email || 'anonymous',
   };
-  logger.error('Error occurred:', errMeta);
-  console.error('[Backend] Error occurred:', err.message, err.stack);
+  
+  // 토큰 만료는 일반적인 상황이므로 warn 레벨로 로깅
+  if (isTokenExpired) {
+    logger.warn('Token expired:', { url: req.url, method: req.method, user: req.user?.email || 'anonymous' });
+  } else {
+    logger.error('Error occurred:', errMeta);
+    console.error('[Backend] Error occurred:', err.message, err.stack);
+  }
 
   // 운영 환경이 아닌 경우 스택 트레이스 포함
   const isDevelopment = config.server.env === 'development';
 
   // 커스텀 에러인 경우
   if (err instanceof AppError) {
-    return res.status(err.statusCode).json({
+    const response = {
       success: false,
       message: err.message,
-      ...(isDevelopment && { stack: err.stack }),
-    });
+    };
+    
+    // 에러 코드가 있으면 추가
+    if (err.errorCode) {
+      response.errorCode = err.errorCode;
+    }
+    
+    // 토큰 만료 에러인 경우 클라이언트가 refresh할 수 있도록 명시
+    if (err.errorCode === 'TOKEN_EXPIRED') {
+      response.shouldRefresh = true;
+    }
+    
+    if (isDevelopment) {
+      response.stack = err.stack;
+    }
+    
+    return res.status(err.statusCode).json(response);
   }
 
   // JWT 에러
@@ -59,6 +84,8 @@ const errorHandler = (err, req, res, next) => {
     return res.status(401).json({
       success: false,
       message: '토큰이 만료되었습니다.',
+      errorCode: 'TOKEN_EXPIRED',
+      shouldRefresh: true,
     });
   }
 
