@@ -13,6 +13,13 @@ if (env === 'production') {
   }
 }
 
+// 한국 시간(KST, UTC+9)을 반환하는 헬퍼 함수
+function getKSTTime() {
+  const now = new Date();
+  // UTC 시간에 9시간(9 * 60 * 60 * 1000 밀리초)을 더함
+  return new Date(now.getTime() + (9 * 60 * 60 * 1000));
+}
+
 const sequelize = new Sequelize(
   dbConfig.database,
   dbConfig.username,
@@ -25,6 +32,29 @@ const sequelize = new Sequelize(
     timezone: dbConfig.timezone,
     pool: dbConfig.pool,
     dialectOptions: dbConfig.dialectOptions || {},
+    define: {
+      // 모든 모델에 공통으로 적용되는 hooks
+      hooks: {
+        beforeCreate: (instance) => {
+          // 한국 시간(KST)으로 설정
+          const kstTime = getKSTTime();
+          
+          if (instance.isNewRecord) {
+            if (!instance.createdAt) {
+              instance.createdAt = kstTime;
+            }
+            if (!instance.updatedAt) {
+              instance.updatedAt = kstTime;
+            }
+          }
+        },
+        beforeUpdate: (instance) => {
+          // 한국 시간(KST)으로 설정
+          const kstTime = getKSTTime();
+          instance.updatedAt = kstTime;
+        },
+      },
+    },
   }
 );
 
@@ -72,6 +102,11 @@ db.DailyCheck = require('./DailyCheck')(sequelize, Sequelize);
 db.OAuthAccount = require('./OAuthAccount')(sequelize, Sequelize);
 db.RefreshToken = require('./RefreshToken')(sequelize, Sequelize);
 db.PasswordResetToken = require('./PasswordResetToken')(sequelize, Sequelize);
+
+// 커뮤니티 관련
+db.CommunityPost = require('./CommunityPost')(sequelize, Sequelize);
+db.CommunityComment = require('./CommunityComment')(sequelize, Sequelize);
+db.CommunityPostLike = require('./CommunityPostLike')(sequelize, Sequelize);
 
 // 관계 설정
 Object.keys(db).forEach((modelName) => {

@@ -53,8 +53,7 @@ router.get('/summary', async (req, res, next) => {
       const completed = !!dc;
       let completedAt = null;
       if (dc && dc.updatedAt) {
-        const u = new Date(dc.updatedAt);
-        completedAt = u.getHours() < 12 ? `오전 ${u.getHours() % 12 || 12}시` : `오후 ${u.getHours() % 12 || 12}시`;
+        completedAt = dc.updatedAt; // 원본 날짜를 그대로 전송
       }
       const diary = diaryByPet[code];
       const hasToday = !!diary;

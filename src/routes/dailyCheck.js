@@ -28,13 +28,22 @@ router.get('/today', async (req, res, next) => {
           id: record.id,
           date: record.date,
           meal: record.meal,
+          meal_detail: record.meal_detail || null,
+          meal_note: record.meal_note || null,
           water: record.water,
+          water_detail: record.water_detail || null,
+          water_note: record.water_note || null,
           activity: record.activity,
+          activity_detail: record.activity_detail || null,
+          activity_note: record.activity_note || null,
           sleep: record.sleep,
+          sleep_detail: record.sleep_detail || null,
+          sleep_note: record.sleep_note || null,
           poop: record.poop,
+          poop_detail: record.poop_detail || null,
+          poop_note: record.poop_note || null,
           special: record.special,
-          special_note: record.special_note,
-          poop_note: record.poop_note,
+          special_note: record.special_note || null,
         },
       },
     });
@@ -103,11 +112,23 @@ router.get('/trend', async (req, res, next) => {
     const list = records.map((r) => ({
       date: r.date,
       meal: r.meal || 'good',
+      meal_detail: r.meal_detail || null,
+      meal_note: r.meal_note || null,
       water: r.water || 'normal',
-      poop: r.poop || 'normal',
+      water_detail: r.water_detail || null,
+      water_note: r.water_note || null,
       activity: r.activity || 'similar',
-      condition: r.special === 'none' ? 'good' : r.special === 'some' ? 'normal' : r.special === 'yes' ? 'bad' : 'normal',
-      specialNote: r.special_note || (r.poop_note ? `배변: ${r.poop_note}` : undefined),
+      activity_detail: r.activity_detail || null,
+      activity_note: r.activity_note || null,
+      sleep: r.sleep || 'normal',
+      sleep_detail: r.sleep_detail || null,
+      sleep_note: r.sleep_note || null,
+      poop: r.poop || 'normal',
+      poop_detail: r.poop_detail || null,
+      poop_note: r.poop_note || null,
+      special: r.special || 'none',
+      special_note: r.special_note || null,
+      condition: r.special === 'none' ? 'good' : r.special === 'yes' ? 'bad' : 'normal',
     }));
     res.json({ success: true, data: list });
   } catch (e) {
@@ -117,14 +138,52 @@ router.get('/trend', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { petCode, date, meal, water, activity, sleep, poop, special, special_note, poop_note } = req.body;
+    const { 
+      petCode, 
+      date, 
+      meal, 
+      meal_detail, 
+      meal_note,
+      water, 
+      water_detail, 
+      water_note,
+      activity, 
+      activity_detail, 
+      activity_note,
+      sleep, 
+      sleep_detail, 
+      sleep_note,
+      poop, 
+      poop_detail,
+      poop_note, 
+      special, 
+      special_note 
+    } = req.body;
     if (!petCode) throw new AppError('petCode 필요', 400);
     const checkDate = date || new Date().toISOString().slice(0, 10);
     const email = req.user.email;
     let row = await db.DailyCheck.findOne({
       where: { user_email: email, pet_code: petCode, date: checkDate },
     });
-    const payload = { meal, water, activity, sleep, poop, special, special_note, poop_note };
+    const payload = { 
+      meal, 
+      meal_detail, 
+      meal_note,
+      water, 
+      water_detail, 
+      water_note,
+      activity, 
+      activity_detail, 
+      activity_note,
+      sleep, 
+      sleep_detail, 
+      sleep_note,
+      poop, 
+      poop_detail,
+      poop_note, 
+      special, 
+      special_note 
+    };
     if (row) await row.update(payload);
     else row = await db.DailyCheck.create({ user_email: email, pet_code: petCode, date: checkDate, ...payload });
     res.status(201).json({
@@ -133,13 +192,22 @@ router.post('/', async (req, res, next) => {
         id: row.id,
         date: row.date,
         meal: row.meal,
+        meal_detail: row.meal_detail || null,
+        meal_note: row.meal_note || null,
         water: row.water,
+        water_detail: row.water_detail || null,
+        water_note: row.water_note || null,
         activity: row.activity,
+        activity_detail: row.activity_detail || null,
+        activity_note: row.activity_note || null,
         sleep: row.sleep,
+        sleep_detail: row.sleep_detail || null,
+        sleep_note: row.sleep_note || null,
         poop: row.poop,
+        poop_detail: row.poop_detail || null,
+        poop_note: row.poop_note || null,
         special: row.special,
-        special_note: row.special_note,
-        poop_note: row.poop_note,
+        special_note: row.special_note || null,
       },
     });
   } catch (e) {

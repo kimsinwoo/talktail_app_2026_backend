@@ -179,9 +179,12 @@ app.use('/api/csv', require('./routes/csv'));
 app.use('/api/daily-check', require('./routes/dailyCheck'));
 app.use('/api/diaries', require('./routes/diaries'));
 app.use('/api/home', require('./routes/home'));
+app.use('/api/weather', require('./routes/weather'));
 app.use('/api/health-chat', require('./routes/healthChat'));
 app.use('/api/ble', require('./routes/ble'));
 app.use('/api/data', require('./routes/data'));
+app.use('/api/dummy', require('./routes/dummy'));
+app.use('/api/community', require('./routes/community'));
 
 // MQTT 서비스 초기화: hub_project/back 쪽 MQTT 서비스·TelemetryWorker 가져와서 사용
 let mqttService = null;
